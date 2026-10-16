@@ -40,6 +40,47 @@ object Store {
         get() = prefs.getBoolean("amoled", false)
         set(v) { prefs.edit().putBoolean("amoled", v).apply() }
 
+    // ---- device profile / adaptive setup (K) ----
+    var profileJson: String
+        get() = prefs.getString("device_profile", "") ?: ""
+        set(v) { prefs.edit().putString("device_profile", v).apply() }
+    /** Wizard version completed; 0 = never run. */
+    var setupDone: Int
+        get() = prefs.getInt("setup_done", 0)
+        set(v) { prefs.edit().putInt("setup_done", v).apply() }
+    /** 0 = auto from profile, 1 = forced on, 2 = forced off */
+    var lowEndMode: Int
+        get() = prefs.getInt("low_end_mode", 0)
+        set(v) { prefs.edit().putInt("low_end_mode", v).apply() }
+    var profileDefaultsApplied: Boolean
+        get() = prefs.getBoolean("profile_defaults", false)
+        set(v) { prefs.edit().putBoolean("profile_defaults", v).apply() }
+
+    // ---- generic keyed prefs (R features) ----
+    fun getStr(key: String, def: String = ""): String = prefs.getString(key, def) ?: def
+    fun putStr(key: String, v: String) { prefs.edit().putString(key, v).apply() }
+    fun getInt(key: String, def: Int = 0): Int = prefs.getInt(key, def)
+    fun putInt(key: String, v: Int) { prefs.edit().putInt(key, v).apply() }
+    fun getBool(key: String, def: Boolean = false): Boolean = prefs.getBoolean(key, def)
+    fun putBool(key: String, v: Boolean) { prefs.edit().putBoolean(key, v).apply() }
+    fun getLong(key: String, def: Long = 0L): Long = prefs.getLong(key, def)
+    fun putLong(key: String, v: Long) { prefs.edit().putLong(key, v).apply() }
+    fun dataDir(): File = dir
+
+    // ---- guard / RAM optimizer (P, Q) ----
+    var guardEnabled: Boolean
+        get() = prefs.getBoolean("guard_enabled", false)
+        set(v) { prefs.edit().putBoolean("guard_enabled", v).apply() }
+    var ramAutoEnabled: Boolean
+        get() = prefs.getBoolean("ram_auto", false)
+        set(v) { prefs.edit().putBoolean("ram_auto", v).apply() }
+    var ramPrefs: String
+        get() = prefs.getString("ram_prefs", "{}") ?: "{}"
+        set(v) { prefs.edit().putString("ram_prefs", v).apply() }
+    var ramHistoryJson: String
+        get() = prefs.getString("ram_history", "[]") ?: "[]"
+        set(v) { prefs.edit().putString("ram_history", v).apply() }
+
     // ---- diagnostics (G) ----
     var diagPeriodicHours: Int
         get() = prefs.getInt("diag_hours", 0)

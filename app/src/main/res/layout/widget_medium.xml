@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/widget_bg" android:orientation="vertical" android:padding="10dp">
+    <TextView android:id="@+id/m_title" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:textColor="@color/w_accent" android:textSize="12sp" android:textStyle="bold" android:text="Android Optimizer" />
+    <TextView android:id="@+id/m_ram" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="14sp" />
+    <ProgressBar android:id="@+id/m_ram_bar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="5dp" android:max="100" />
+    <TextView android:id="@+id/m_cpu" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="14sp" />
+    <ProgressBar android:id="@+id/m_cpu_bar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="5dp" android:max="100" />
+    <TextView android:id="@+id/m_storage" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="14sp" />
+    <ProgressBar android:id="@+id/m_storage_bar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="5dp" android:max="100" />
+    <TextView android:id="@+id/m_batt" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="14sp" />
+</LinearLayout>

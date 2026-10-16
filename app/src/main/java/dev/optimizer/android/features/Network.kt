@@ -1,18 +1,15 @@
 package dev.optimizer.android.features
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.Service
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import android.os.Build
 import android.os.IBinder
 import dev.optimizer.android.core.ChangeLog
+import dev.optimizer.android.core.Compat
 import dev.optimizer.android.core.Protected
 import dev.optimizer.android.core.Root
 import dev.optimizer.android.core.Sh
@@ -141,6 +138,7 @@ object Net {
     }
 
     fun cleartextAllowed(ctx: Context, pkg: String): Boolean = runCatching {
+        if (Build.VERSION.SDK_INT < 23) return@runCatching false // flag does not exist; before Android 6 cleartext is simply allowed for everyone
         (ctx.packageManager.getApplicationInfo(pkg, 0).flags and android.content.pm.ApplicationInfo.FLAG_USES_CLEARTEXT_TRAFFIC) != 0
     }.getOrDefault(false)
 
@@ -183,7 +181,8 @@ object Net {
     }
 
     private fun cmdsFor(uid: Int, method: String, add: Boolean): List<String> = when (method) {
-        "iptables" -> listOf("iptables -w -${if (add) "I" else "D"} OUTPUT -m owner --uid-owner $uid -j REJECT", "ip6tables -w -${if (add) "I" else "D"} OUTPUT -m owner --uid-owner $uid -j REJECT")
+        // `-w` (wait for the xtables lock) only exists in newer iptables builds; older ones reject the option, so retry without it.
+        "iptables" -> listOf("iptables", "ip6tables").map { t -> val o = if (add) "I" else "D"; "$t -w -$o OUTPUT -m owner --uid-owner $uid -j REJECT 2>/dev/null || $t -$o OUTPUT -m owner --uid-owner $uid -j REJECT" }
         else -> listOf("cmd netpolicy ${if (add) "add" else "remove"} restrict-background-blacklist $uid")
     }
 
@@ -191,6 +190,7 @@ object Net {
         if (!Optimizer.unlocked()) return Op(false, "Locked: needs root and a baseline backup.")
         Protected.reasons(ctx, pkg)?.let { return Op(false, "Protected: $it") }
         val uid = runCatching { ctx.packageManager.getApplicationInfo(pkg, 0).uid }.getOrNull() ?: return Op(false, "Unknown package")
+        if (method == "netpolicy" && !Compat.hasNetPolicyCli) return Op(false, "netpolicy needs Android 7+ (`cmd netpolicy`). Use iptables on this device.")
         if (blocks().any { it.uid == uid && it.method == method }) return Op(false, "Already blocked")
         for (c in cmdsFor(uid, method, true)) {
             val r = Sh.root(c)
@@ -215,7 +215,7 @@ object Net {
         return sb.toString().ifEmpty { "No blocks recorded." }
     }
 
-    fun currentRules(): String = Sh.root("iptables -w -S OUTPUT 2>&1 | grep -i owner; cmd netpolicy list restrict-background-blacklist 2>&1").text.ifEmpty { "(none)" }
+    fun currentRules(): String = Sh.root("(iptables -w -S OUTPUT 2>/dev/null || iptables -S OUTPUT 2>&1) | grep -i owner; ${if (Compat.hasNetPolicyCli) "cmd netpolicy list restrict-background-blacklist 2>&1" else "true"}").text.ifEmpty { "(none)" }
 }
 
 // =====================================================================================================
@@ -303,11 +303,10 @@ class NetSamplerService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Store.init(applicationContext)
-        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(NotificationChannel("netsampler", "Network sampler", NotificationManager.IMPORTANCE_LOW))
-        val n = Notification.Builder(this, "netsampler").setContentTitle("Sampling network connections")
+        Compat.channel(this, "netsampler", "Network sampler", 2)
+        val n = Compat.builder(this, "netsampler").setContentTitle("Sampling network connections")
             .setContentText("Stored locally on this device; stop it in the Network screen").setSmallIcon(android.R.drawable.stat_notify_sync).setOngoing(true).build()
-        if (Build.VERSION.SDK_INT >= 34) startForeground(8, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE) else startForeground(8, n)
+        if (!Compat.startForegroundSafe(this, 8, n)) { Store.netSampling = false; stopSelf(); return START_NOT_STICKY }
         job?.cancel()
         job = scope.launch {
             var pruneAt = 0L
@@ -324,7 +323,7 @@ class NetSamplerService : Service() {
     override fun onDestroy() { scope.cancel(); Sampler.reset(); super.onDestroy() }
 
     companion object {
-        fun start(ctx: Context) { Store.netSampling = true; ctx.startForegroundService(Intent(ctx, NetSamplerService::class.java)) }
+        fun start(ctx: Context) { Store.netSampling = true; Compat.startFgService(ctx, Intent(ctx, NetSamplerService::class.java)) }
         fun stop(ctx: Context) { Store.netSampling = false; ctx.stopService(Intent(ctx, NetSamplerService::class.java)) }
     }
 }

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/widget_bg" android:orientation="vertical" android:padding="10dp">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal" android:gravity="center_vertical">
+        <TextView android:id="@+id/l_title" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:textColor="@color/w_accent" android:textSize="12sp" android:textStyle="bold" android:text="Android Optimizer · live" />
+        <Button android:id="@+id/btn_opt" android:layout_width="wrap_content" android:layout_height="32dp" android:minWidth="0dp" android:minHeight="0dp"
+            android:textSize="11sp" android:textColor="@color/w_text" android:background="@color/w_btn" android:text="Optimize RAM" android:layout_marginLeft="4dp" />
+        <Button android:id="@+id/btn_open" android:layout_width="wrap_content" android:layout_height="32dp" android:minWidth="0dp" android:minHeight="0dp"
+            android:textSize="11sp" android:textColor="@color/w_text" android:background="@color/w_btn" android:text="Open" android:layout_marginLeft="4dp" />
+        <Button android:id="@+id/btn_refresh" android:layout_width="wrap_content" android:layout_height="32dp" android:minWidth="0dp" android:minHeight="0dp"
+            android:textSize="11sp" android:textColor="@color/w_text" android:background="@color/w_btn" android:text="Refresh" android:layout_marginLeft="4dp" />
+    </LinearLayout>
+    <TextView android:id="@+id/l_cpu" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="13sp" android:textStyle="bold" android:layout_marginTop="4dp" />
+    <TextView android:id="@+id/l_cores" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_sub" android:textSize="10sp" />
+    <ImageView android:id="@+id/l_cpu_graph" android:layout_width="match_parent" android:layout_height="40dp" android:scaleType="fitXY" />
+    <TextView android:id="@+id/l_ram" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="13sp" android:textStyle="bold" android:layout_marginTop="2dp" />
+    <ImageView android:id="@+id/l_ram_graph" android:layout_width="match_parent" android:layout_height="40dp" android:scaleType="fitXY" />
+    <TextView android:id="@+id/l_swap" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="12sp" />
+    <TextView android:id="@+id/l_storage" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="12sp" />
+    <TextView android:id="@+id/l_batt" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="12sp" />
+    <TextView android:id="@+id/l_thermal" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="12sp" />
+    <TextView android:id="@+id/l_net" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_text" android:textSize="12sp" />
+    <TextView android:id="@+id/l_top" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/w_sub" android:textSize="11sp" android:layout_marginTop="2dp" />
+</LinearLayout>

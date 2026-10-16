@@ -9,4 +9,5 @@
 /keystore/
 *.jks
 *.keystore
+keystore.properties
 .DS_Store

@@ -1,5 +1,6 @@
 package dev.optimizer.android.ui
 
+import androidx.compose.material.icons.filled.Lock
 import android.Manifest
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +44,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import dev.optimizer.android.core.Root
 import dev.optimizer.android.core.Store
+import dev.optimizer.android.features.Features
 import dev.optimizer.android.features.AppControl
 import dev.optimizer.android.features.AppRow
 import dev.optimizer.android.features.AutoKillService
@@ -88,13 +90,13 @@ fun MonitorScreen() {
         owner.lifecycle.addObserver(ob); onDispose { owner.lifecycle.removeObserver(ob) }
     }
 
-    LaunchedEffect(AppState.rootState) {
+    LaunchedEffect(AppState.rootState, AppState.lowEnd) {
         while (true) {
             val s = withContext(Dispatchers.IO) { Monitor.snapshot(ctx, true) }
             snap = s
-            s.cpu.percent?.let { cpuHist.add(it); if (cpuHist.size > 60) cpuHist.removeAt(0) }
-            val m = s.mem; ramHist.add(m.usedKb.toFloat() / m.totalKb.coerceAtLeast(1) * 100f); if (ramHist.size > 60) ramHist.removeAt(0)
-            delay(2000)
+            s.cpu.percent?.let { cpuHist.add(it); while (cpuHist.size > Features.monitorHistory) cpuHist.removeAt(0) }
+            val m = s.mem; ramHist.add(m.usedKb.toFloat() / m.totalKb.coerceAtLeast(1) * 100f); while (ramHist.size > Features.monitorHistory) ramHist.removeAt(0)
+            delay(Features.monitorIntervalMs)
         }
     }
 
@@ -108,6 +110,8 @@ fun MonitorScreen() {
         }
     }
 
+    var closeFlow by remember { mutableStateOf(false) }
+    if (closeFlow) RamOptimizeFlow(onClose = { closeFlow = false; blockedVersion++ }, title = "Close apps")
     LazyColumn(Modifier.fillMaxWidth()) {
         item {
             Section("Live usage (every 2 s)") {
@@ -124,6 +128,7 @@ fun MonitorScreen() {
                 }
             }
         }
+        item { RamCard() }
         if (!usage) item {
             Section("Usage Access") {
                 Text("Grant Usage Access so the app can list recently used apps (Android hides other apps' processes from normal apps).", style = MaterialTheme.typography.bodySmall)
@@ -133,6 +138,7 @@ fun MonitorScreen() {
         item {
             Section("Running / recent apps") {
                 Text(snap?.appsNote ?: "", style = MaterialTheme.typography.bodySmall)
+                Button(onClick = { closeFlow = true }) { Text("Close apps…") }
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                     listOf("ram" to "RAM", "cpu" to "CPU", "recent" to "Recent", "name" to "Name").forEach { (k, l) ->
                         FilterChip(selected = sort == k, onClick = { sort = k }, label = { Text(l) })
@@ -152,7 +158,14 @@ fun MonitorScreen() {
                     OutlinedButton(enabled = a.protectedReason == null, onClick = {
                         scope.launch { val r = withContext(Dispatchers.IO) { AppControl.close(ctx, a.pkg) }; toast(ctx, r.message) }
                     }) { Text("Close") }
+                    if (!AppState.rooted && dev.optimizer.android.features.ForceStopService.enabled()) OutlinedButton(enabled = a.protectedReason == null, onClick = {
+                        val n = dev.optimizer.android.features.ForceStopService.forceStop(ctx, listOf(a.pkg)); toast(ctx, if (n > 0) "Opening App info and tapping Force stop..." else "Not queued (protected app or accessibility service off)")
+                    }) { Text("Force stop (accessibility)") }
                     OutlinedButton(enabled = a.protectedReason == null, onClick = { confirmKeep = a }) { Text("Keep closed") }
+                    if (a.protectedReason == null) androidx.compose.material3.IconButton(onClick = {
+                        val now = dev.optimizer.android.core.Rules.isNever(a.pkg)
+                        dev.optimizer.android.core.Rules.setNever(ctx, a.pkg, !now)?.let { toast(ctx, it) }; blockedVersion++
+                    }) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Lock, "Never stop", tint = if (blockedVersion >= 0 && dev.optimizer.android.core.Rules.isNever(a.pkg)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline) }
                 }
             }
         }

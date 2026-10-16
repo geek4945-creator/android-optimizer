@@ -36,7 +36,7 @@ object Protected {
             if (home?.activityInfo?.packageName == pkg) return "Current home launcher"
         }
         runCatching {
-            if ((ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager).defaultDialerPackage == pkg) return "Default phone app"
+            if (Build.VERSION.SDK_INT >= 23 && (ctx.getSystemService(Context.TELECOM_SERVICE) as TelecomManager).defaultDialerPackage == pkg) return "Default phone app"
         }
         runCatching { if (Telephony.Sms.getDefaultSmsPackage(ctx) == pkg) return "Default SMS app" }
         runCatching {
@@ -60,5 +60,4 @@ object Protected {
         if (id == 0) null else android.content.ComponentName.unflattenFromString(res.getString(id))?.packageName
     }.getOrNull()
 
-    fun sdkOk() = Build.VERSION.SDK_INT >= 26
 }

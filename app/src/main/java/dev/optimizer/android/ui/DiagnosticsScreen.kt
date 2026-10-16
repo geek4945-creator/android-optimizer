@@ -45,10 +45,11 @@ import kotlinx.coroutines.withContext
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun DiagnosticsScreen() {
+fun DiagnosticsScreen(freeze: Boolean = false) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var issues by remember { mutableStateOf<List<Issue>?>(null) }
+    var report by remember { mutableStateOf<dev.optimizer.android.features.FreezeReport?>(null) }
     var busy by remember { mutableStateOf<String?>(null) }
     var msg by remember { mutableStateOf<String?>(null) }
     val selected = remember { mutableStateListOf<String>() } // "issueId|optId"
@@ -56,23 +57,35 @@ fun DiagnosticsScreen() {
     var hours by remember { mutableStateOf(Store.diagPeriodicHours) }
     val notif = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
-    fun scan() { scope.launch { busy = "Scanning (real device data)..."; selected.clear(); issues = withContext(Dispatchers.IO) { Diagnostics.scan(ctx, Root.isRooted) }; busy = null } }
+    fun scan() { scope.launch { busy = "Scanning (real device data)..."; selected.clear(); issues = withContext(Dispatchers.IO) { if (freeze) dev.optimizer.android.features.FreezeDoctor.scan(ctx, Root.isRooted).also { report = it }.issues else Diagnostics.scan(ctx, Root.isRooted) }; busy = null } }
     fun pick(list: List<Pair<Issue, FixOpt>>) {
         scope.launch { busy = "Building command preview..."; val p = withContext(Dispatchers.IO) { Diagnostics.preview(list) }; busy = null; preview = list to p }
     }
     fun chosen(): List<Pair<Issue, FixOpt>> = issues.orEmpty().flatMap { i -> i.options.filter { "${i.id}|${it.id}" in selected }.map { i to it } }
 
     Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
-        Section("Diagnostics & conflicts") {
+        if (freeze) Section("Freeze Doctor") {
+            Text("Measures why this device freezes: memory pressure (PSI) and swap/zRAM thrash, free storage, eMMC I/O stalls (PSI io + /proc/diskstats sampled over 2 s) and chip wear, fstrim age, thermal throttling and CPU governor/frequency caps, runaway processes and wakelocks, big caches, autostarters, battery, WebView, stale dexopt, system_server/SystemUI crashes and ANRs (dropbox, crash buffer) and kernel mmc/ext4/OOM messages. Nothing is changed by the scan. Findings are ranked by a likelihood score built from the evidence shown; sources that cannot be read are listed as skipped, never guessed. Many probes need root.", style = MaterialTheme.typography.bodySmall)
+            Text("Fixes are selectable, show the exact commands first, are logged and undoable where possible (root fixes need the baseline).", style = MaterialTheme.typography.bodySmall)
+        } else Section("Diagnostics & conflicts") {
             Text("Scans real device data for inefficiencies and conflicts (storage, RAM, animations, patch age, SELinux, accessibility/keyboard/launcher conflicts, task killers, vendor killers, disabled Play components, ...). Each issue shows evidence and selectable fixes; root fixes need the baseline and are logged and undoable; without root use the settings shortcuts.", style = MaterialTheme.typography.bodySmall)
             Busy(busy)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(enabled = busy == null, onClick = { scan() }) { Text("Scan now") }
-                OutlinedButton(enabled = busy == null && issues != null, onClick = { pick(Diagnostics.recommended(issues.orEmpty())) }) { Text("Fix all recommended") }
+                Button(enabled = busy == null, onClick = { scan() }) { Text(if (freeze) "Run Freeze Doctor" else "Scan now") }
+                OutlinedButton(enabled = busy == null && issues != null, onClick = { pick(Diagnostics.recommended(issues.orEmpty())) }) { Text(if (freeze) "Run recommended fixes" else "Fix all recommended") }
                 OutlinedButton(enabled = busy == null && selected.isNotEmpty(), onClick = { pick(chosen()) }) { Text("Fix selected (${selected.size})") }
             }
         }
-        Section("Periodic scan (WorkManager)") {
+        if (freeze && report != null) Section("Health snapshot") {
+            Text("Exports the findings, raw metrics and device identifiers (model, board, build, patch level) as JSON to share with support or a forum. It contains no accounts, IMEI or serial number; it does include package names of heavy apps.", style = MaterialTheme.typography.bodySmall)
+            OutlinedButton(onClick = {
+                val f = dev.optimizer.android.features.FreezeDoctor.exportSnapshot(ctx, report!!)
+                val uri = androidx.core.content.FileProvider.getUriForFile(ctx, "${ctx.packageName}.fileprovider", f)
+                startSafe(ctx, android.content.Intent.createChooser(android.content.Intent(android.content.Intent.ACTION_SEND).setType("application/json").putExtra(android.content.Intent.EXTRA_STREAM, uri).addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION), "Share health snapshot"))
+            }) { Text("Export & share health snapshot") }
+            if (report!!.skipped.isNotEmpty()) Text("Skipped probes: " + report!!.skipped.joinToString("; "), style = MaterialTheme.typography.labelSmall)
+        }
+        if (!freeze) Section("Periodic scan (WorkManager)") {
             Text("Runs in the background without root (root-only checks are skipped) and posts a notification when High/Medium issues change. Android may delay work to save battery (minimum interval 15 min).", style = MaterialTheme.typography.bodySmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(0 to "Off", 6 to "6 h", 12 to "12 h", 24 to "24 h").forEach { (h, l) ->
@@ -89,7 +102,7 @@ fun DiagnosticsScreen() {
             Text("${list.size} finding(s)", Modifier.padding(horizontal = 16.dp), fontWeight = FontWeight.SemiBold)
             if (list.isEmpty()) Info("No issues found by the current checks. This does not prove the device is optimal.")
             list.forEach { i ->
-                Section("${i.sev.label.uppercase()} · ${i.title}") {
+                Section((if (freeze) "#${list.indexOf(i) + 1} · " else "") + "${i.sev.label.uppercase()} · ${i.title}") {
                     Text(i.explanation, style = MaterialTheme.typography.bodyMedium)
                     Text("Evidence:", fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodySmall)
                     i.evidence.take(12).forEach { Text("• $it", style = MaterialTheme.typography.bodySmall) }
@@ -107,6 +120,12 @@ fun DiagnosticsScreen() {
                         }
                     }
                 }
+            }
+        }
+        if (freeze) {
+            val guide = remember { dev.optimizer.android.features.FreezeDoctor.guidance(ctx) }
+            Section("TankPro / MediaTek / Rockchip / Allwinner guidance") {
+                guide.forEach { (t, d) -> Text(t, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium); Text(d, style = MaterialTheme.typography.bodySmall) }
             }
         }
     }

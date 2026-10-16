@@ -49,6 +49,8 @@ fun RootScreen() {
 
     Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
         val st = AppState.rootState
+        RootDetectCard(onGranted = { if (!Backups.hasBaseline()) askBaseline = true })
+        RootHealthCard()
         Section("Root status") {
             val (txt, color) = when (st) {
                 RootState.ROOTED -> "ROOTED - su access granted" to MaterialTheme.colorScheme.primary
@@ -85,6 +87,8 @@ fun RootScreen() {
                 style = MaterialTheme.typography.bodyMedium
             )
         }
+        RootSetupGuide(onGranted = { if (!Backups.hasBaseline()) askBaseline = true })
+        if (AppState.rooted) SuInstallCard()
         Section("Safety baseline") {
             Text(if (AppState.baseline) "A baseline backup exists. Optimize features are unlocked while rooted." else
                 "No baseline backup yet. Before any change is possible you must create one (settings, package states, permissions, props). The Optimize tab stays locked until then.")
@@ -127,4 +131,18 @@ fun BaselineDialog(onClose: () -> Unit) {
         },
         dismissButton = { if (result == null) OutlinedButton(enabled = !running, onClick = onClose) { Text("Later") } }
     )
+}
+
+@Composable
+private fun RootHealthCard() {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var res by remember { mutableStateOf<List<dev.optimizer.android.core.RootHealth.Line>?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    Section("Root health check") {
+        Text("Checks the persistent root shell (one su process reused by the live sampler), response time, SELinux, root implementation and whether pm/am work. Uses the existing grant; the prompt appears at most once.", style = MaterialTheme.typography.bodySmall)
+        Busy(if (busy) "Checking..." else null)
+        Button(enabled = !busy, onClick = { scope.launch { busy = true; res = withContext(Dispatchers.IO) { dev.optimizer.android.core.RootHealth.run(ctx) }; busy = false } }) { Text("Run health check") }
+        res?.forEach { l -> Text((when (l.ok) { true -> "✓ "; false -> "✗ "; null -> "• " }) + l.name + ": " + l.detail, style = MaterialTheme.typography.bodySmall, color = if (l.ok == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface) }
+    }
 }

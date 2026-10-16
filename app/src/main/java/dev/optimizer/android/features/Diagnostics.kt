@@ -26,8 +26,7 @@ import dev.optimizer.android.core.ChangeLog
 import dev.optimizer.android.core.Root
 import dev.optimizer.android.core.Sh
 import dev.optimizer.android.core.Store
-import java.time.LocalDate
-import java.time.temporal.ChronoUnit
+import dev.optimizer.android.core.Compat
 import java.util.concurrent.TimeUnit
 
 enum class Sev(val label: String, val rank: Int) { HIGH("High", 0), MEDIUM("Medium", 1), LOW("Low", 2), INFO("Info", 3) }
@@ -41,7 +40,7 @@ data class FixOpt(
     val rootPlan: (() -> Plan)? = null, val intent: Intent? = null, val local: (() -> Unit)? = null,
 )
 
-data class Issue(val id: String, val title: String, val sev: Sev, val explanation: String, val evidence: List<String>, val options: List<FixOpt>)
+data class Issue(val id: String, val title: String, val sev: Sev, val explanation: String, val evidence: List<String>, val options: List<FixOpt>, val score: Int = 0)
 
 object Diagnostics {
     private fun intent(action: String) = Intent(action).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -65,17 +64,26 @@ object Diagnostics {
                     rootPlan = { Plan(listOf("pm trim-caches 999999999999"), emptyList()) }),
                     FixOpt("storage_settings", "Open storage settings", intent = intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS)))))
         }
-        // 2. RAM
+        // 2. RAM / memory pressure
         runCatching {
             val am = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
             val mi = ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
             val pct = mi.availMem * 100 / mi.totalMem.coerceAtLeast(1)
-            if (pct < 15 || mi.lowMemory) add(Issue("ram", "Low available RAM", if (mi.lowMemory) Sev.HIGH else Sev.MEDIUM,
-                "Little free memory forces Android to kill apps and reload them, which feels like lag.",
-                listOf("Available ${mi.availMem / 1048576} MB of ${mi.totalMem / 1048576} MB ($pct%)", "System low-memory flag: ${mi.lowMemory}"),
-                listOf(FixOpt("ram_cap", "Cap cached background processes at 16", false, "Medium risk; see Optimize tab.",
-                    rootPlan = { Optimizer.fixes.first { it.id == "cached_cap" }.plan() }),
-                    FixOpt("ram_monitor", "Close memory-heavy apps from the Monitor tab (manual)"))))
+            val rs = RamOptimizer.read()
+            val swapPct = if (rs.swapTotalKb > 0) rs.swapUsedKb * 100 / rs.swapTotalKb else 0L
+            val pressure = pct < 15 || mi.lowMemory || (rs.swapTotalKb > 0 && swapPct >= 70 && pct < 25)
+            if (pressure) add(Issue("ram", "Memory pressure", if (mi.lowMemory || pct < 8) Sev.HIGH else Sev.MEDIUM,
+                "Little available memory (or heavy swap use) forces Android to kill apps and reload them, which feels like lag. Note that cached apps count as reclaimable: only a low 'available' figure matters.",
+                listOf("Available ${mi.availMem / 1048576} MB of ${mi.totalMem / 1048576} MB ($pct%)", "System low-memory flag: ${mi.lowMemory}",
+                    if (rs.swapTotalKb > 0) "Swap/zRAM: ${rs.swapUsedKb / 1024} MB used of ${rs.swapTotalKb / 1024} MB ($swapPct%)" else "No swap/zRAM configured"),
+                listOf(FixOpt("ram_gentle", "Gentle RAM optimize now (closes only cached/background apps; skips protected and 'Never stop' apps)", true, "Apps may restart later; effect is temporary.",
+                    local = { val c = RamOptimizer.candidates(ctx, false); RamOptimizer.run(ctx, c.items, RamOptions(true, false, false, false, false), "diagnostics (gentle)") }),
+                    FixOpt("ram_compact", "Compact memory (root; no apps are closed)", false, "Harmless; short CPU burst.",
+                        rootPlan = { Plan(listOf("echo 1 > /proc/sys/vm/compact_memory"), emptyList()) }),
+                    FixOpt("ram_cap", "Cap cached background processes at 16", false, "Medium risk; see Optimize tab.",
+                        rootPlan = { Optimizer.fixes.first { it.id == "cached_cap" }.plan() }),
+                    FixOpt("ram_devopts", "Open Developer options (Running services / background limit)", intent = intent(Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS)),
+                    FixOpt("ram_monitor", "Review and close apps manually: Monitor > Close apps…"))))
         }
         // 3. animation scales
         runCatching {
@@ -90,10 +98,10 @@ object Diagnostics {
         }
         // 4. security patch age
         runCatching {
-            val age = ChronoUnit.DAYS.between(LocalDate.parse(Build.VERSION.SECURITY_PATCH), LocalDate.now())
+            val age = Compat.patchAgeDays() ?: return@runCatching
             if (age > 365) add(Issue("patch", "Outdated security patch", if (age > 730) Sev.HIGH else Sev.MEDIUM,
                 "The device has not received security fixes for a long time. Only a vendor/ROM update can fix this.",
-                listOf("Patch level ${Build.VERSION.SECURITY_PATCH} ($age days old)", "Build ${Build.DISPLAY}"),
+                listOf("Patch level ${Compat.securityPatch()} ($age days old)", "Build ${Build.DISPLAY}"),
                 listOf(FixOpt("patch_update", "Open system update", intent = intent("android.settings.SYSTEM_UPDATE_SETTINGS")))))
         }
         // 5. SELinux
@@ -153,13 +161,13 @@ object Diagnostics {
             killers.map { "${pm.getApplicationLabel(it.applicationInfo!!)} (${it.packageName})" },
             killers.take(6).map { FixOpt("killer_${it.packageName}", "Open settings of ${it.packageName}", intent = AppControl.settingsIntent(it.packageName)) }))
         // 12. battery optimisation for this app
-        runCatching {
+        if (Compat.hasDoze) runCatching {
             val p = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
             if (!p.isIgnoringBatteryOptimizations(ctx.packageName)) add(Issue("battery_self", "This app is subject to battery optimisation", Sev.LOW,
                 "Doze can stop the monitor, samplers and scheduled scans while the screen is off.",
                 listOf("isIgnoringBatteryOptimizations(${ctx.packageName}) = false"),
                 listOf(FixOpt("battery_self_fix", "Exempt this app from Doze (root)", true, rootPlan = { Optimizer.fixes.first { it.id == "doze_self" }.plan() }),
-                    FixOpt("battery_self_ui", "Open battery optimisation list", intent = intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)))))
+                    FixOpt("battery_self_ui", "Open battery optimisation list", intent = intent("android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS")))))
         }
         // 13. aggressive vendor killer
         val vendor = Vendor.detect()
@@ -170,7 +178,7 @@ object Diagnostics {
                 "Chinese-market ROMs commonly kill background apps (messengers, alarms, this app) regardless of Android's rules. Exempt important apps in the vendor's own settings.",
                 listOf("ROM: ${vendor.rom}", "Detected: ${vendor.groups.joinToString { it.label }}"),
                 screens.mapIndexed { i, (l, it) -> FixOpt("vendor_screen_$i", l, i == 0, intent = it) } +
-                    FixOpt("vendor_batt", "Open Android battery optimisation list", intent = intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))))
+                    (if (Compat.hasDoze) listOf(FixOpt("vendor_batt", "Open Android battery optimisation list", intent = intent("android.settings.IGNORE_BATTERY_OPTIMIZATION_SETTINGS"))) else emptyList())))
         }
         // 14. Play Store / GMS disabled
         for ((p, n) in listOf("com.android.vending" to "Google Play Store", "com.google.android.gms" to "Google Play services")) {
@@ -190,7 +198,7 @@ object Diagnostics {
                 if (ai.enabled && b.method == "disable") add(Issue("drift_${b.pkg}", "${b.pkg} is on the blocked list but enabled", Sev.LOW,
                     "Something (an update, a restore, the user) re-enabled it, so it can run again.",
                     listOf("blocked method=${b.method}, pm enabled=true"),
-                    listOf(FixOpt("drift_refreeze_${b.pkg}", "Freeze again (root)", true, rootPlan = { Plan(listOf("pm disable-user --user 0 ${Sh.q(b.pkg)}"), listOf("pm enable ${Sh.q(b.pkg)}")) }),
+                    listOf(FixOpt("drift_refreeze_${b.pkg}", "Freeze again (root)", true, rootPlan = { if (dev.optimizer.android.core.Rules.blockReason(ctx, b.pkg, true) != null) Plan(emptyList(), emptyList()) else Plan(listOf("pm disable-user --user 0 ${Sh.q(b.pkg)}"), listOf("pm enable ${Sh.q(b.pkg)}")) }),
                         FixOpt("drift_forget_${b.pkg}", "Remove from blocked list", local = { Store.removeBlocked(b.pkg) }))))
             }
         }
@@ -285,13 +293,13 @@ class DiagWorker(ctx: Context, p: WorkerParameters) : CoroutineWorker(ctx, p) {
         val prev = Store.diagLastCount
         Store.diagLastCount = important.size
         if (important.isNotEmpty() && important.size != prev) {
-            val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(NotificationChannel("diag", "Diagnostics", NotificationManager.IMPORTANCE_DEFAULT))
-            val pi = PendingIntent.getActivity(applicationContext, 0, Intent(applicationContext, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            Compat.channel(applicationContext, "diag", "Diagnostics", 3)
+            val pi = PendingIntent.getActivity(applicationContext, 0, Intent(applicationContext, MainActivity::class.java), PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0))
             runCatching {
-                nm.notify(11, android.app.Notification.Builder(applicationContext, "diag")
-                    .setSmallIcon(android.R.drawable.stat_sys_warning).setContentTitle("Device diagnostics: ${important.size} issue(s)")
-                    .setContentText(important.take(3).joinToString { it.title }).setContentIntent(pi).setAutoCancel(true).build())
+                if (androidx.core.app.NotificationManagerCompat.from(applicationContext).areNotificationsEnabled())
+                    androidx.core.app.NotificationManagerCompat.from(applicationContext).notify(11, Compat.builder(applicationContext, "diag")
+                        .setSmallIcon(android.R.drawable.stat_sys_warning).setContentTitle("Device diagnostics: ${important.size} issue(s)")
+                        .setContentText(important.take(3).joinToString { it.title }).setContentIntent(pi).setAutoCancel(true).build())
             }
         }
         return Result.success()

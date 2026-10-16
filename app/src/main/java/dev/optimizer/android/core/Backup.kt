@@ -22,6 +22,8 @@ enum class RestoreCat(val label: String) {
     SETTINGS("Settings (system / secure / global)"),
     PACKAGES("App enabled / disabled / suspended state"),
     PERMISSIONS("Runtime permission grants"),
+    RULES("App rules (Never stop / Keep closed)"),
+    VM_TUNABLES("Kernel memory tunables (swappiness, vfs_cache_pressure, min_free_kbytes)"),
 }
 
 object Backups {
@@ -65,7 +67,7 @@ object Backups {
         ctx: Context, label: String, baseline: Boolean, appDataPkgs: List<String> = emptyList(),
         progress: (String) -> Unit = {},
     ): Result<BackupInfo> = runCatching {
-        check(Root.isRooted) { "Root access is required to create a backup." }
+        // works without root too: Settings are read through the Settings API and packages through PackageManager / `pm list` (what the app may read)
         val ts = System.currentTimeMillis()
         val id = (if (baseline) "baseline-" else "backup-") + SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date(ts))
         val dir = File(Store.backupsDir(), id).also { it.mkdirs() }
@@ -129,6 +131,14 @@ object Backups {
             .let { if (it.ok) it else Sh.root("pm list packages -f -3", 60) }
         File(dir, "apps_user.txt").writeText(apps.out); cats += "apps"
 
+        progress("App rules and memory tunables")
+        runCatching { File(dir, "rules.json").writeText(Rules.toJson()); cats += "rules" }
+        runCatching {
+            val t = dev.optimizer.android.features.RamOptimizer.readTunables()
+            File(dir, "vm_tunables.json").writeText(JSONObject().put("swappiness", t.swappiness ?: JSONObject.NULL).put("vfs_cache_pressure", t.vfs ?: JSONObject.NULL)
+                .put("min_free_kbytes", t.minFree ?: JSONObject.NULL).put("zram_disksize", t.zramBytes ?: JSONObject.NULL).toString(2)); cats += "vm_tunables"
+        }
+
         progress("Build props")
         File(dir, "getprop.txt").writeText(Sh.root("getprop", 30).out); cats += "getprop"
         val buildProp = Sh.root("cat /system/build.prop 2>/dev/null | head -c 200000")
@@ -160,11 +170,12 @@ object Backups {
             manifest.put("id", id).put("label", label).put("timestamp", ts).put("baseline", baseline)
                 .put("categories", JSONArray(cats)).put("device", deviceString()).put("exported", exported)
                 .put("notes", notes.toString().trim())
-                .put("app_version", "1.0.0").put("appdata_packages", JSONArray(appDataPkgs))
+                .put("app_version", runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrDefault("?")).put("appdata_packages", JSONArray(appDataPkgs))
                 .put("device_info", JSONObject()
                     .put("manufacturer", Build.MANUFACTURER).put("model", Build.MODEL).put("board", Build.BOARD)
                     .put("sdk", Build.VERSION.SDK_INT).put("release", Build.VERSION.RELEASE)
-                    .put("fingerprint", Build.FINGERPRINT).put("security_patch", Build.VERSION.SECURITY_PATCH))
+                    .put("fingerprint", Build.FINGERPRINT).put("security_patch", Compat.securityPatch() ?: "unknown"))
+                .put("device_profile", DeviceProfile.current()?.toJson() ?: JSONObject.NULL)
             File(dir, "manifest.json").writeText(manifest.toString(2))
         }
         writeManifest()
@@ -192,6 +203,8 @@ object Backups {
     }
 
     private fun exportCopy(ctx: Context, dir: File, id: String, onlyManifest: Boolean = false): Boolean {
+        // user-chosen SAF folder first (works on every Android version without storage permission)
+        if (SafFolder.uri() != null && !onlyManifest) { if (SafFolder.copyBackup(ctx, dir, id) == null) return true }
         val files = (dir.listFiles() ?: emptyArray()).filter { it.isFile && (!onlyManifest || it.name == "manifest.json") }
         if (Build.VERSION.SDK_INT >= 29) {
             val ok = runCatching {
@@ -213,13 +226,21 @@ object Backups {
             }.getOrDefault(false)
             if (ok) return true
         }
-        // fallback: root copy
+        // fallback 1: root copy to /sdcard/Documents
         val tgt = "/sdcard/$EXPORT_REL/$id"
-        if (!Root.isRooted) return false
-        Sh.root("mkdir -p $tgt")
-        var all = true
-        for (f in files) all = Sh.root("cp ${Sh.q(f.absolutePath)} $tgt/ && chmod 666 $tgt/${f.name}", 60).ok && all
-        return all
+        if (Root.isRooted) {
+            Sh.root("mkdir -p $tgt")
+            var all = true
+            for (f in files) all = Sh.root("cp ${Sh.q(f.absolutePath)} $tgt/ && chmod 666 $tgt/${f.name}", 60).ok && all
+            if (all) return true
+        }
+        // fallback 2 (Android 5-9 without root, or MediaStore failure): app-specific external storage. Needs no storage permission on any
+        // supported version; visible to file managers under Android/data/<package>/files/, removed on uninstall.
+        return runCatching {
+            val d = File(ctx.getExternalFilesDir(null), "$EXPORT_REL/$id").apply { mkdirs() }
+            for (f in files) f.copyTo(File(d, f.name), overwrite = true)
+            true
+        }.getOrDefault(false)
     }
 
     fun delete(id: String): String? {
@@ -227,6 +248,7 @@ object Backups {
         if (b.baseline) return "The baseline backup cannot be deleted (the Optimize tab depends on it)."
         File(Store.backupsDir(), id).deleteRecursively()
         if (Root.isRooted) Sh.root("rm -rf /sdcard/$EXPORT_REL/$id", 60)
+        runCatching { File(Store.appCtx.getExternalFilesDir(null), "$EXPORT_REL/$id").deleteRecursively() }
         return null
     }
 
@@ -242,12 +264,27 @@ object Backups {
 
     /** Restores selected categories from backup `id`. Returns a human-readable log. */
     fun restore(ctx: Context, id: String, cats: Set<RestoreCat>, progress: (String) -> Unit = {}): String {
-        if (!Root.isRooted) return "Root access is required."
+        if (!Priv.canChange()) return "Nothing can be restored: this app has no privileged channel (no root, no Shizuku) and no WRITE_SECURE_SETTINGS. Grant it from a PC: adb shell pm grant ${ctx.packageName} android.permission.WRITE_SECURE_SETTINGS"
         val dir = File(Store.backupsDir(), id)
         if (!dir.exists()) return "Backup not found."
         val log = StringBuilder()
         var changed = 0
 
+        if (RestoreCat.RULES in cats) {
+            val f = File(dir, "rules.json")
+            if (f.exists()) runCatching { val (n, c) = Rules.importJson(f.readText(), replace = false); log.append("rules: imported $n ($c conflict(s) resolved, 'never stop' wins)\n") }.onFailure { log.append("rules: failed ${it.message}\n") }
+            else log.append("rules: nothing saved\n")
+        }
+        if (RestoreCat.VM_TUNABLES in cats) {
+            val f = File(dir, "vm_tunables.json")
+            if (f.exists()) runCatching {
+                val j = JSONObject(f.readText()); val c = StringBuilder()
+                if (!j.isNull("swappiness")) c.append("echo ${j.getInt("swappiness")} > /proc/sys/vm/swappiness\n")
+                if (!j.isNull("vfs_cache_pressure")) c.append("echo ${j.getInt("vfs_cache_pressure")} > /proc/sys/vm/vfs_cache_pressure\n")
+                if (!j.isNull("min_free_kbytes")) c.append("echo ${j.getLong("min_free_kbytes")} > /proc/sys/vm/min_free_kbytes\n")
+                if (c.isNotEmpty()) Sh.root(c.toString(), 30); log.append("vm tunables: restored (zRAM size is not touched by restore)\n")
+            }.onFailure { log.append("vm tunables: failed ${it.message}\n") } else log.append("vm tunables: nothing saved\n")
+        }
         if (RestoreCat.SETTINGS in cats) {
             for (ns in listOf("system", "secure", "global")) {
                 progress("Restoring settings $ns")
@@ -306,6 +343,7 @@ object Backups {
                     val o = pj.getJSONObject(p)
                     for (perm in o.keys()) {
                         val g = o.getBoolean(perm)
+                        if (!Compat.hasRuntimePerms) continue
                         cmds.append(if (g) "pm grant ${Sh.q(p)} $perm 2>/dev/null\n" else "pm revoke ${Sh.q(p)} $perm 2>/dev/null\n"); n++
                     }
                 }

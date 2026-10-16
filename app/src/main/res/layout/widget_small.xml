@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/w_root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:background="@drawable/widget_bg" android:orientation="vertical" android:gravity="center" android:padding="8dp">
+    <TextView android:id="@+id/s_ram" android:layout_width="wrap_content" android:layout_height="wrap_content"
+        android:textColor="@color/w_text" android:textSize="18sp" android:textStyle="bold" android:text="RAM --%" />
+    <ProgressBar android:id="@+id/s_ram_bar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="6dp" android:max="100" />
+    <TextView android:id="@+id/s_cpu" android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="6dp"
+        android:textColor="@color/w_text" android:textSize="18sp" android:textStyle="bold" android:text="CPU --%" />
+    <ProgressBar android:id="@+id/s_cpu_bar" style="?android:attr/progressBarStyleHorizontal" android:layout_width="match_parent" android:layout_height="6dp" android:max="100" />
+</LinearLayout>

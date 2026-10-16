@@ -133,7 +133,7 @@ object Assessment {
     fun software(): Section {
         val rows = mutableListOf<Pair<String, String>>()
         rows += "Android" to "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
-        rows += "Security patch" to Build.VERSION.SECURITY_PATCH
+        rows += "Security patch" to (dev.optimizer.android.core.Compat.securityPatch() ?: "unknown (Android 5 has no patch level)")
         val kernel = Sh.user("uname -r").out.trim().ifEmpty { System.getProperty("os.version") ?: "unknown" }
         rows += "Kernel" to kernel
         rows += "Build fingerprint" to Build.FINGERPRINT
@@ -194,6 +194,9 @@ object Assessment {
             sb.append("== ${s.title} ==\n")
             s.rows.forEach { (k, v) -> sb.append("$k: ${v.replace("\n", "; ")}\n") }
             sb.append("\n")
+        }
+        dev.optimizer.android.core.DeviceProfile.current()?.let { pr ->
+            sb.append("== Device profile ==\n"); pr.rows().forEach { (k, v) -> sb.append("$k: $v\n") }; sb.append("\n")
         }
         val user = apps.count { !it.system }
         sb.append("== Applications ==\nUser apps: $user\nSystem apps: ${apps.size - user}\nFlagged: ${apps.count { it.risky }}\n")

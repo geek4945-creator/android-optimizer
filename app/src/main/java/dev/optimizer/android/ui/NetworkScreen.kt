@@ -60,13 +60,15 @@ fun NetworkScreen() {
     var retention by remember { mutableIntStateOf(Store.netRetentionDays) }
     var timelinePkg by remember { mutableStateOf<String?>(null) }
     var blockPkg by remember { mutableStateOf<String?>(null) }
-    var blockMethod by remember { mutableStateOf("iptables") }
+    var blockMethod by remember { mutableStateOf(if (dev.optimizer.android.core.Priv.rootLike) "iptables" else "netpolicy") }
     val dbCount = remember(tick) { runCatching { NetDb.count() }.getOrDefault(0L) }
     val pkgsWithData = remember(tick) { runCatching { NetDb.packagesWithData() }.getOrDefault(emptyList()) }
 
     Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
         Busy(busy)
         msg?.let { Section("Result") { Text(it, style = MaterialTheme.typography.bodySmall) } }
+
+        NoRootNetworkCards()
 
         Section("Live connections") {
             Text("Reads /proc/net/tcp, tcp6, udp, udp6. Android 10+ blocks these files for normal apps, so this needs root. Flags: tracker list match, uncommon port, likely cleartext, no reverse DNS. The app cannot see hostnames the app asked for, packet contents or TLS SNI.", style = MaterialTheme.typography.bodySmall)
@@ -160,11 +162,11 @@ fun NetworkScreen() {
             }) { Text("Resolve domains → IPs") }
         }
 
-        Section("Network block (root, reversible)") {
+        Section(if (dev.optimizer.android.core.Priv.rootLike) "Network block (root, reversible)" else "Network block (Shizuku/root, reversible; or use the VPN firewall above)") {
             if (!AppState.unlocked) Warn("Needs root and the baseline backup.")
             Text("iptables: `-m owner --uid-owner <uid> -j REJECT` (IPv4+IPv6) blocks all traffic of the app, but rules vanish on reboot (use Re-apply). netpolicy: `cmd netpolicy add restrict-background-blacklist <uid>` only restricts background data and is persistent; availability depends on the Android version. Protected apps (system UI, Play services, launcher, keyboard…) cannot be blocked. Blocks are logged and included in the stock snapshot.", style = MaterialTheme.typography.bodySmall)
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                FilterChip(selected = blockMethod == "iptables", onClick = { blockMethod = "iptables" }, label = { Text("iptables") })
+                FilterChip(selected = blockMethod == "iptables", enabled = dev.optimizer.android.core.Priv.rootLike, onClick = { blockMethod = "iptables" }, label = { Text(if (dev.optimizer.android.core.Priv.rootLike) "iptables" else "iptables (needs root)") })
                 FilterChip(selected = blockMethod == "netpolicy", onClick = { blockMethod = "netpolicy" }, label = { Text("netpolicy") })
             }
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {

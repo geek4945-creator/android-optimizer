@@ -82,6 +82,19 @@ fun AssessScreen() {
                 if (hw == null) Busy("Reading hardware, software and apps...")
             }
         }
+        item {
+            Section("Device profile (adapts this app)") {
+                val pr = AppState.profile
+                if (pr == null) Busy("Scanning device...") else {
+                    pr.rows().forEach { (k, v) -> KV(k, v) }
+                    val perms = remember(AppState.rootState, reload) { dev.optimizer.android.core.DeviceProfile.livePermissions(ctx) }
+                    Text("Live permissions: " + perms.entries.joinToString { (k, v) -> "$k=${v?.let { if (it) "yes" else "no" } ?: "n/a"}" }, style = MaterialTheme.typography.bodySmall)
+                    Text("Low-end mode: ${if (AppState.lowEnd) "ON" else "off"} (${when (dev.optimizer.android.core.Store.lowEndMode) { 1 -> "forced on"; 2 -> "forced off"; else -> "automatic from RAM class" }})", style = MaterialTheme.typography.bodySmall)
+                }
+                OutlinedButton(enabled = !AppState.scanning, onClick = { AppState.rescan(ctx) }) { Text(if (AppState.scanning) "Scanning..." else "Re-scan device") }
+                Text("Re-run automatically when the build fingerprint or security patch changes (checked at launch).", style = MaterialTheme.typography.bodySmall)
+            }
+        }
         hw?.let { s -> item { Section(s.title) { s.rows.forEach { (k, v) -> KV(k, v) } } } }
         sw?.let { s -> item { Section(s.title) { s.rows.forEach { (k, v) -> KV(k, v) } } } }
         apps?.let { all ->

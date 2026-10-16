@@ -51,12 +51,13 @@ fun OptimizeScreen(goRoot: () -> Unit) {
         Column(Modifier.verticalScroll(rememberScrollState()).padding(vertical = 8.dp)) {
             Section("Optimize is locked") {
                 Text(
-                    if (!AppState.rooted) "Optimizing applies changes through a root shell, so it needs root access. Open the Root tab and request root."
-                    else "Root is available, but there is no baseline backup yet. Create it first so every change can be reverted.",
+                    if (!AppState.rooted && !dev.optimizer.android.core.Priv.writeSecure()) (if (dev.optimizer.android.core.Edition.ROOT) "Optimizing applies changes through a privileged shell: it needs root, Shizuku or the WRITE_SECURE_SETTINGS grant. Open the Root tab (root) or More › Access (Shizuku / adb)." else "Optimizing applies changes through Shizuku or the WRITE_SECURE_SETTINGS adb grant. Open the Access tab to set one up; the guided shortcuts below work without anything.")
+                    else "Access is available, but there is no baseline backup yet. Create it first (Access tab / Root tab) so every change can be reverted.",
                     style = MaterialTheme.typography.bodyMedium
                 )
-                Button(onClick = goRoot) { Text("Go to Root tab") }
+                Button(onClick = goRoot) { Text(if (dev.optimizer.android.core.Edition.ROOT) "Go to Root tab" else "Go to Access tab") }
             }
+            GuidedSettingsCard()
         }
         return
     }
@@ -101,7 +102,7 @@ fun OptimizeScreen(goRoot: () -> Unit) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(f.title, fontWeight = FontWeight.SemiBold)
-                        Text("Risk: ${f.risk.label}" + (if (!avail) " · needs API ${f.minSdk}+ (Android ${if (f.minSdk >= 31) "12" else "9"}+)" else ""), style = MaterialTheme.typography.labelMedium,
+                        Text("Risk: ${f.risk.label}" + (if (!avail) " · not available: needs Android ${dev.optimizer.android.features.Features.androidName(f.minSdk)}+ (this device: API ${android.os.Build.VERSION.SDK_INT})" else ""), style = MaterialTheme.typography.labelMedium,
                             color = if (f.risk.ordinal > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary)
                         Text(f.description, style = MaterialTheme.typography.bodySmall)
                     }
@@ -117,12 +118,15 @@ fun OptimizeScreen(goRoot: () -> Unit) {
                 Column(Modifier.fillMaxWidth()) {
                     Text(m.title, fontWeight = FontWeight.SemiBold)
                     Text(m.desc, style = MaterialTheme.typography.bodySmall)
-                    OutlinedButton(enabled = busy == null, onClick = { confirmMaint = m }) { Text("Run") }
+                    val blocked = Optimizer.maintBlockedReason(m)
+                    blocked?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error) }
+                    OutlinedButton(enabled = busy == null && blocked == null, onClick = { confirmMaint = m }) { Text("Run") }
                 }
             }
         }
 
         Section("Doze / battery whitelist") {
+            if (!dev.optimizer.android.core.Compat.hasDoze) Warn("Doze does not exist before Android 6 - this section does nothing on this device.")
             Text("Exempts chosen apps from Doze (`dumpsys deviceidle whitelist`) and allows RUN_IN_BACKGROUND (`cmd appops`). Previous app-op mode is recorded for undo.", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(enabled = busy == null, onClick = { dozePicker = true }) { Text("Pick apps") }

@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Build
 import dev.optimizer.android.core.Backups
 import dev.optimizer.android.core.ChangeLog
+import dev.optimizer.android.core.Compat
 import dev.optimizer.android.core.Protected
 import dev.optimizer.android.core.Root
 import dev.optimizer.android.core.Sh
@@ -12,7 +13,7 @@ enum class Risk(val label: String) { LOW("Low"), MEDIUM("Medium"), HIGH("High") 
 
 /** A reversible fix. plan() reads the current state and returns the apply commands plus the exact commands that undo them. */
 data class Fix(
-    val id: String, val title: String, val description: String, val risk: Risk, val minSdk: Int = 26,
+    val id: String, val title: String, val description: String, val risk: Risk, val minSdk: Int = 21,
     val exclusiveWith: List<String> = emptyList(), val note: String = "",
     val plan: () -> Plan,
 )
@@ -23,7 +24,7 @@ data class Op(val ok: Boolean, val message: String)
 
 object Optimizer {
     /** The Optimize tab (and all root changes) are locked until root works and a baseline backup exists. */
-    fun unlocked() = Root.isRooted && Backups.hasBaseline()
+    fun unlocked() = dev.optimizer.android.core.Priv.canChange() && Backups.hasBaseline()
 
     fun getSetting(ns: String, key: String): String? =
         Sh.root("settings get $ns $key").out.trim().let { if (it.isEmpty() || it == "null") null else it }
@@ -63,11 +64,17 @@ object Optimizer {
                 val old = Sh.root("getprop persist.sys.ui.hw").out.trim()
                 Plan(listOf("setprop persist.sys.ui.hw true"), listOf("setprop persist.sys.ui.hw ${Sh.q(old)}"))
             }),
-        Fix("doze_self", "Exempt this app from Doze / battery optimisation", "Adds this app to the device-idle whitelist so its monitoring keeps working with the screen off.", Risk.LOW,
-            plan = { Plan(listOf("dumpsys deviceidle whitelist +dev.optimizer.android"), listOf("dumpsys deviceidle whitelist -dev.optimizer.android")) }),
+        Fix("doze_self", "Exempt this app from Doze / battery optimisation", "Adds this app to the device-idle whitelist so its monitoring keeps working with the screen off.", Risk.LOW, minSdk = 23,
+            plan = { val me = dev.optimizer.android.core.Store.appCtx.packageName; Plan(listOf("dumpsys deviceidle whitelist +$me"), listOf("dumpsys deviceidle whitelist -$me")) }),
     )
 
     fun fixAvailable(f: Fix) = Build.VERSION.SDK_INT >= f.minSdk
+    fun maintAvailable(m: Maint) = Build.VERSION.SDK_INT >= m.minSdk
+    /** Low-end mode (DeviceProfile) blocks the heavy dexopt jobs: they thrash storage/RAM and heat weak devices. */
+    fun maintBlockedReason(m: Maint): String? =
+        if (!maintAvailable(m)) "Needs Android ${when (m.minSdk) { 24 -> "7+"; 26 -> "8+"; else -> m.minSdk.toString() }}"
+        else if (m.heavy && dev.optimizer.android.ui.AppState.lowEnd) "Disabled in low-end mode (heavy job). Turn low-end mode off in More › Settings to allow it."
+        else null
 
     private fun runAll(cmds: List<String>, timeout: Long = 60): String? {
         for (c in cmds) {
@@ -95,12 +102,12 @@ object Optimizer {
     }
 
     // ---- maintenance (not reversible) ----
-    data class Maint(val id: String, val title: String, val desc: String, val cmds: List<String>, val timeoutSec: Long)
+    data class Maint(val id: String, val title: String, val desc: String, val cmds: List<String>, val timeoutSec: Long, val minSdk: Int = 21, val heavy: Boolean = false)
 
     val maintenance = listOf(
-        Maint("trim", "Clear app caches", "pm trim-caches frees cache space system-wide. Caches are rebuilt by apps; nothing to undo.", listOf("pm trim-caches 999999999999"), 120),
-        Maint("bgdexopt", "Run background dexopt job", "cmd package bg-dexopt-job optimises apps that need it (can take minutes and use battery).", listOf("cmd package bg-dexopt-job"), 900),
-        Maint("compile", "Compile all apps (speed-profile)", "cmd package compile -m speed-profile -a. Can take 5-30 min and heat the phone; uses storage.", listOf("cmd package compile -m speed-profile -a"), 1800),
+        Maint("trim", "Clear app caches", "pm trim-caches frees cache space system-wide. Caches are rebuilt by apps; nothing to undo.", listOf("pm trim-caches 999999999999"), 120, minSdk = 24),
+        Maint("bgdexopt", "Run background dexopt job", "cmd package bg-dexopt-job optimises apps that need it (can take minutes and use battery).", listOf("cmd package bg-dexopt-job"), 900, minSdk = 26, heavy = true),
+        Maint("compile", "Compile all apps (speed-profile)", "cmd package compile -m speed-profile -a. Can take 5-30 min and heat the phone; uses storage.", listOf("cmd package compile -m speed-profile -a"), 1800, minSdk = 24, heavy = true),
         Maint("fstrim", "TRIM storage (fstrim)", "Runs fstrim on /data and /cache where available.", listOf("fstrim -v /data", "fstrim -v /cache"), 300),
     )
 
@@ -116,12 +123,14 @@ object Optimizer {
     fun whitelist(ctx: Context, pkg: String): Op {
         if (!unlocked()) return Op(false, "Locked: needs root and a baseline backup.")
         val q = Sh.q(pkg)
-        val oldMode = Sh.root("cmd appops get $q RUN_IN_BACKGROUND").out.trim()
-        val prevMode = Regex("RUN_IN_BACKGROUND:\\s*(\\w+)").find(oldMode)?.groupValues?.get(1) ?: "default"
-        val err = runAll(listOf("dumpsys deviceidle whitelist +$pkg", "cmd appops set $q RUN_IN_BACKGROUND allow"))
+        if (!Compat.hasDoze) return Op(false, "Doze does not exist before Android 6 - nothing to whitelist.")
+        val bgOp = Build.VERSION.SDK_INT >= 26 // RUN_IN_BACKGROUND app-op exists from Android 8
+        val prevMode = if (bgOp) Regex("RUN_IN_BACKGROUND:\\s*(\\w+)").find(Sh.root("${Compat.appopsCmd} get $q RUN_IN_BACKGROUND").out.trim())?.groupValues?.get(1) ?: "default" else ""
+        val apply = listOf("dumpsys deviceidle whitelist +$pkg") + (if (bgOp) listOf("${Compat.appopsCmd} set $q RUN_IN_BACKGROUND allow") else emptyList())
+        val undo = listOf("dumpsys deviceidle whitelist -$pkg") + (if (bgOp) listOf("${Compat.appopsCmd} set $q RUN_IN_BACKGROUND $prevMode") else emptyList())
+        val err = runAll(apply)
         if (err != null) return Op(false, err)
-        ChangeLog.add("doze", "doze:$pkg", "Doze/background whitelist: $pkg", "deviceidle whitelist + appops RUN_IN_BACKGROUND allow (was $prevMode)",
-            listOf("dumpsys deviceidle whitelist -$pkg", "cmd appops set $q RUN_IN_BACKGROUND $prevMode"))
+        ChangeLog.add("doze", "doze:$pkg", "Doze/background whitelist: $pkg", "deviceidle whitelist" + (if (bgOp) " + appops RUN_IN_BACKGROUND allow (was $prevMode)" else ""), undo)
         return Op(true, "$pkg exempted")
     }
 
@@ -146,7 +155,7 @@ object Optimizer {
             val f = fixes.first { it.id == id }
             if (!ChangeLog.isActive(id) && fixAvailable(f)) out += apply(f)
         }
-        out += runMaintenance(maintenance.first { it.id == "trim" })
+        maintenance.first { it.id == "trim" }.let { if (maintAvailable(it)) out += runMaintenance(it) }
         return out
     }
 

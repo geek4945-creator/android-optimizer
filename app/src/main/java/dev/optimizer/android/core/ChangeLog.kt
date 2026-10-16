@@ -78,6 +78,8 @@ object ChangeLog {
             markUndone(c.id)
             // keep persisted block list consistent when a block is undone
             if (c.category == "block") Store.removeBlocked(c.group.removePrefix("block:"))
+            // an undone enforcement (rule:<pkg>:<mode>) downgrades the rule to plain kill-on-start
+            if (c.category == "rule") { val pkg = c.group.removePrefix("rule:").substringBefore(":"); Rules.get(pkg)?.let { if (it.keepClosed && it.mode != Rules.MODE_KILL) Rules.setMode(pkg, Rules.MODE_KILL) } }
             null
         } else errs.toString().trim()
     }

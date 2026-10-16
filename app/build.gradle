@@ -3,30 +3,75 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+// Release signing: /workspace/keystore/keystore.properties (see /workspace/keystore/README.txt). Override with -PkeystoreProps=/path or env KEYSTORE_PROPS.
+def ksPropsFile = new File(project.findProperty('keystoreProps') ?: System.getenv('KEYSTORE_PROPS') ?: '/workspace/keystore/keystore.properties')
+def ksProps = new Properties()
+if (ksPropsFile.exists()) ksPropsFile.withInputStream { ksProps.load(it) }
+
 android {
     namespace 'dev.optimizer.android'
     compileSdk 34
 
     defaultConfig {
-        applicationId 'dev.optimizer.android'
+        // minSdk 21 = Android 5.0, the lowest the Compose / Material 3 / WorkManager / lifecycle stack supports (all declare minSdk 21).
         minSdk 21
+        // targetSdk 34 on purpose (installable everywhere; a Google Play upload today would need 35 - see README).
         targetSdk 34
-        versionCode 1
-        versionName '1.0.0'
+        versionCode 5
+        versionName '1.5.0'
+        // No native code of our own; no ndk.abiFilters, so a single universal APK carries whatever ABIs the dependencies ship.
+    }
+
+    // Two editions that can be installed side by side:
+    //  rooted   = dev.optimizer.android           (root via su > Shizuku > plain)
+    //  standard = dev.optimizer.android.standard  (never runs su; Shizuku / ADB-granted permissions > plain)
+    flavorDimensions 'edition'
+    productFlavors {
+        rooted {
+            dimension 'edition'
+            applicationId 'dev.optimizer.android'
+            buildConfigField 'boolean', 'ROOT_EDITION', 'true'
+            buildConfigField 'String', 'EDITION', '"rooted"'
+        }
+        standard {
+            dimension 'edition'
+            applicationId 'dev.optimizer.android.standard'
+            buildConfigField 'boolean', 'ROOT_EDITION', 'false'
+            buildConfigField 'String', 'EDITION', '"standard"'
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (ksPropsFile.exists()) {
+                storeFile file(ksProps['storeFile'])
+                storePassword ksProps['storePassword']
+                keyAlias ksProps['keyAlias']
+                keyPassword ksProps['keyPassword']
+            }
+        }
     }
 
     buildTypes {
         debug { debuggable true }
-        release { minifyEnabled false }
+        release {
+            // R8 with a conservative rule set (own package kept, so only unused library code is removed; no reflection surprises).
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            if (ksPropsFile.exists()) signingConfig signingConfigs.release
+        }
     }
+    // one universal APK (no ABI / density splits)
+    splits { abi { enable false }; density { enable false } }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = '17' }
-    buildFeatures { compose true }
+    buildFeatures { compose true; buildConfig true; aidl true }
     composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
-    lint { abortOnError false }
+    lint { abortOnError false; checkReleaseBuilds false }
     packaging { resources { excludes += '/META-INF/{AL2.0,LGPL2.1}' } }
 }
 
@@ -44,5 +89,8 @@ dependencies {
     implementation 'androidx.compose.material:material-icons-core'
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
     implementation 'androidx.work:work-runtime-ktx:2.9.1'
+    // Shizuku (official API, https://github.com/RikkaApps/Shizuku-API): optional shell-level access without root.
+    implementation 'dev.rikka.shizuku:api:13.1.5'
+    implementation 'dev.rikka.shizuku:provider:13.1.5'
     debugImplementation 'androidx.compose.ui:ui-tooling'
 }

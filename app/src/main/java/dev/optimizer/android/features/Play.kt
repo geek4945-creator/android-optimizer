@@ -77,17 +77,16 @@ object Play {
 
     fun installedVersion(ctx: Context, pkg: String): String? = runCatching {
         val pi = ctx.packageManager.getPackageInfo(pkg, 0)
-        "${pi.versionName} (${if (Build.VERSION.SDK_INT >= 28) pi.longVersionCode else @Suppress("DEPRECATION") pi.versionCode.toLong()})"
+        "${pi.versionName} (${dev.optimizer.android.core.Compat.versionCode(pi)})"
     }.getOrNull()
 
     fun installedCertSha(ctx: Context, pkg: String): List<String> = runCatching {
-        val pi = ctx.packageManager.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)
+        val pi = ctx.packageManager.getPackageInfo(pkg, dev.optimizer.android.core.Compat.signatureFlags())
         sha256s(pi)
     }.getOrDefault(emptyList())
 
     private fun sha256s(pi: PackageInfo): List<String> {
-        val si = pi.signingInfo ?: return emptyList()
-        val sigs = if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory?.takeLast(1)?.toTypedArray() ?: si.apkContentsSigners
+        val sigs = dev.optimizer.android.core.Compat.signers(pi)
         return sigs.map { s -> MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02X".format(it) } }
     }
 
@@ -153,7 +152,7 @@ object Play {
         var pkgName: String? = null; var ver: String? = null
         for (a in apks) {
             val pi = try {
-                ctx.packageManager.getPackageArchiveInfo(a.absolutePath, PackageManager.GET_SIGNING_CERTIFICATES)
+                ctx.packageManager.getPackageArchiveInfo(a.absolutePath, dev.optimizer.android.core.Compat.signatureFlags())
             } catch (e: Throwable) { null }
             if (pi == null) return Verification(false, null, null, fps, "${a.name}: cannot parse or its signature is invalid.", apks)
             val s = sha256s(pi)
@@ -177,10 +176,10 @@ object Play {
             if (u.protocol != "https") return "Only HTTPS downloads are allowed."
             val c = u.openConnection() as HttpURLConnection
             c.connectTimeout = 20000; c.readTimeout = 30000; c.instanceFollowRedirects = true
-            c.setRequestProperty("User-Agent", "AndroidOptimizer/1.0")
+            c.setRequestProperty("User-Agent", "AndroidOptimizer/1.4")
             if (c.responseCode !in 200..299) return "HTTP ${c.responseCode}"
             if (c.url.protocol != "https") return "Redirected to a non-HTTPS URL; refused."
-            val total = c.contentLengthLong
+            val total = if (Build.VERSION.SDK_INT >= 24) c.contentLengthLong else c.contentLength.toLong()
             dest.parentFile?.mkdirs()
             c.inputStream.use { i -> dest.outputStream().use { o ->
                 val buf = ByteArray(64 * 1024); var done = 0L
@@ -191,8 +190,14 @@ object Play {
     }
 
     // ------------------------------------------------------------------ install: PackageInstaller
-    fun canInstallUnknown(ctx: Context) = ctx.packageManager.canRequestPackageInstalls()
-    fun unknownSourcesIntent(ctx: Context) = Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${ctx.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    /** Android 8+: per-app permission. Before: the global "Unknown sources" switch (Settings.Secure.INSTALL_NON_MARKET_APPS). */
+    @Suppress("DEPRECATION")
+    fun canInstallUnknown(ctx: Context): Boolean =
+        if (Build.VERSION.SDK_INT >= 26) ctx.packageManager.canRequestPackageInstalls()
+        else runCatching { Settings.Secure.getInt(ctx.contentResolver, Settings.Secure.INSTALL_NON_MARKET_APPS, 0) == 1 }.getOrDefault(false)
+    fun unknownSourcesIntent(ctx: Context): Intent =
+        if (Build.VERSION.SDK_INT >= 26) Intent("android.settings.MANAGE_UNKNOWN_APP_SOURCES", Uri.parse("package:${ctx.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        else Intent(Settings.ACTION_SECURITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     private const val ACTION = "dev.optimizer.android.INSTALL_RESULT"
 
@@ -214,7 +219,7 @@ object Play {
             }
         }
         val filter = IntentFilter(ACTION)
-        if (Build.VERSION.SDK_INT >= 33) ctx.registerReceiver(rcv, filter, Context.RECEIVER_NOT_EXPORTED) else ctx.registerReceiver(rcv, filter)
+        androidx.core.content.ContextCompat.registerReceiver(ctx, rcv, filter, androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED)
         try {
             val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
             params.setAppPackageName(pkg)
@@ -261,7 +266,7 @@ object Play {
         val privileged = (pi?.requestedPermissions ?: emptyArray()).filter { p ->
             runCatching {
                 val info = pm.getPermissionInfo(p, 0)
-                (info.protectionLevel and PermissionInfo.PROTECTION_FLAG_PRIVILEGED) != 0
+                (info.protectionLevel and 0x10 /* PROTECTION_FLAG_PRIVILEGED, API 23+ */) != 0
             }.getOrDefault(false)
         }.distinct().sorted()
         return buildString {
@@ -301,12 +306,14 @@ object Play {
             Sh.root("rm -f $tmpApk $tmpXml")
             return false to "Cannot make /system writable (${rw.text.take(200)}). This device uses a read-only/dynamic system partition; nothing was changed. A systemless Magisk module is the usual alternative (not provided by this app)."
         }
+        // privapp-permissions allow-lists only exist from Android 8; before that priv-app placement alone grants privileged permissions.
+        val xmlCmd = if (Build.VERSION.SDK_INT >= 26) "cp $tmpXml $xml && chown root:root $xml && chmod 644 $xml &&" else ""
         val cmds = """
             mkdir -p $target &&
             cp $tmpApk $target/$dir.apk &&
             chown root:root $target $target/$dir.apk &&
             chmod 755 $target && chmod 644 $target/$dir.apk &&
-            cp $tmpXml $xml && chown root:root $xml && chmod 644 $xml &&
+            $xmlCmd
             (chcon u:object_r:system_file:s0 $target $target/$dir.apk $xml 2>/dev/null; true)
         """.trimIndent().replace("\n", " ")
         val r = Sh.root(cmds, 120)

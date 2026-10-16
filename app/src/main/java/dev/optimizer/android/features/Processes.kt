@@ -8,6 +8,7 @@ import android.content.pm.PackageManager
 import android.provider.Settings
 import dev.optimizer.android.core.Backups
 import dev.optimizer.android.core.ChangeLog
+import dev.optimizer.android.core.Compat
 import dev.optimizer.android.core.Protected
 import dev.optimizer.android.core.Root
 import dev.optimizer.android.core.Sh
@@ -46,6 +47,13 @@ object Processes {
 
     private class Facts(val installer: String?, val system: Boolean, val launcher: Boolean, val sensitive: List<String>, val boot: Boolean, val overlay: Boolean, val a11y: Boolean, val notifL: Boolean, val admin: Boolean, val targetSdk: Int, val lastUsed: Long?, val label: String)
 
+    /** toolbox ps prints names like u0_a123 (user 0, app 123 => uid 10123), root, system, shell... */
+    private fun legacyUid(user: String): Int {
+        Regex("u(\\d+)_a(\\d+)").matchEntire(user)?.let { return it.groupValues[1].toInt() * 100000 + 10000 + it.groupValues[2].toInt() }
+        Regex("u(\\d+)_i(\\d+)").matchEntire(user)?.let { return it.groupValues[1].toInt() * 100000 + 99000 + it.groupValues[2].toInt() }
+        return when (user) { "root" -> 0; "system" -> 1000; "radio" -> 1001; "shell" -> 2000; "media" -> 1013; "wifi" -> 1010; "bluetooth" -> 1002; "nfc" -> 1027; else -> 1 }
+    }
+
     fun list(ctx: Context): Pair<List<Proc>, String> {
         val rooted = Root.isRooted
         val r = Sh.run("ps -A -o PID,PPID,UID,RSS,PCPU,ETIME,ARGS", rooted, 30)
@@ -60,7 +68,17 @@ object Processes {
         val factCache = HashMap<String, Facts?>()
         val beaconPkgs = runCatching { Net.analyzeBeacons().map { it.pkg }.toSet() }.getOrDefault(emptySet())
         val blocked = Store.blocked().map { it.pkg }.toSet()
-        val lines = r.out.lines().drop(1).filter { it.isNotBlank() }
+        var lines = r.out.lines().drop(1).filter { it.isNotBlank() }
+        var legacyNote = ""
+        if (lines.none { it.trim().split(Regex("\\s+"), 7).size >= 7 && it.trim().split(Regex("\\s+"))[0].toIntOrNull() != null }) {
+            // Android 5-7 toolbox `ps` has neither -A nor -o. Format: USER PID PPID VSIZE RSS WCHAN PC [S] NAME (RSS in pages). No CPU / start time.
+            val legacy = Sh.run("ps", rooted, 30).out.lines().drop(1).mapNotNull { l ->
+                val f = l.trim().split(Regex("\\s+")); if (f.size < 8) return@mapNotNull null
+                val pid = f[1].toIntOrNull() ?: return@mapNotNull null
+                "$pid ${f[2]} ${legacyUid(f[0])} ${(f[4].toLongOrNull() ?: 0L) * 4} - - ${f.last()}"
+            }
+            if (legacy.isNotEmpty()) { lines = legacy; legacyNote = " Legacy `ps` (Android < 8): CPU and start time are not available." }
+        }
         for (l in lines) {
             val t = l.trim().split(Regex("\\s+"), 7)
             if (t.size < 7) continue
@@ -123,7 +141,7 @@ object Processes {
         }
         val note = if (lines.isEmpty() || (!rooted && out.size < 5))
             "Without root Android shows only this app's own processes (hidepid). Grant root for the full list." else if (rooted) "Root: full process list. RAM = RSS (not PSS). CPU = lifetime average from `ps`, not an instantaneous value." else "Limited list."
-        return out.sortedWith(compareByDescending<Proc> { it.score }.thenByDescending { it.rssKb }) to note
+        return out.sortedWith(compareByDescending<Proc> { it.score }.thenByDescending { it.rssKb }) to (note + legacyNote)
     }
 
     private fun recentUsageMap(ctx: Context): Map<String, Long> {
@@ -198,8 +216,8 @@ object Snapshots {
         val pm = ctx.packageManager
         val userPk = pm.getInstalledApplications(0).filter { (it.flags and ApplicationInfo.FLAG_SYSTEM) == 0 }.map { it.packageName }.take(200)
         val ops = JSONObject()
-        if (userPk.isNotEmpty()) {
-            val script = userPk.joinToString("\n") { "echo '##$it'; cmd appops get $it 2>/dev/null" }
+        if (userPk.isNotEmpty() && Compat.hasAppopsCli) {
+            val script = userPk.joinToString("\n") { "echo '##$it'; ${Compat.appopsCmd} get $it 2>/dev/null" }
             val txt = Sh.root(script, 240).out
             var p: String? = null; val rx = Regex("^([A-Z_0-9]+): (allow|ignore|deny|foreground|default)")
             for (line in txt.lineSequence()) {
@@ -239,14 +257,14 @@ object Snapshots {
             if (n > 0) Sh.root(cmds.toString(), 600); log.append("packages: $n changes\n")
             Store.blocked().forEach { if (st.optString(it.pkg) == "enabled") Store.removeBlocked(it.pkg) }
         }
-        if (SnapCat.PERMISSIONS in cats) {
+        if (SnapCat.PERMISSIONS in cats && Compat.hasRuntimePerms) {
             progress("Permissions"); val pj = j.getJSONObject("permissions"); val c = StringBuilder(); var n = 0
             for (p in pj.keys()) { val o = pj.getJSONObject(p); for (perm in o.keys()) { c.append(if (o.getBoolean(perm)) "pm grant ${Sh.q(p)} $perm 2>/dev/null\n" else "pm revoke ${Sh.q(p)} $perm 2>/dev/null\n"); n++ } }
             if (n > 0) Sh.root(c.toString(), 900); log.append("permissions: $n re-applied\n")
         }
-        if (SnapCat.APPOPS in cats) {
+        if (SnapCat.APPOPS in cats && Compat.hasAppopsCli) {
             progress("App-ops"); val oj = j.getJSONObject("appops"); val c = StringBuilder(); var n = 0
-            for (p in oj.keys()) { val o = oj.getJSONObject(p); for (op in o.keys()) { c.append("cmd appops set ${Sh.q(p)} $op ${o.getString(op)} 2>/dev/null\n"); n++ } }
+            for (p in oj.keys()) { val o = oj.getJSONObject(p); for (op in o.keys()) { c.append("${Compat.appopsCmd} set ${Sh.q(p)} $op ${o.getString(op)} 2>/dev/null\n"); n++ } }
             if (n > 0) Sh.root(c.toString(), 900); log.append("appops: $n re-applied\n")
         }
         if (SnapCat.ACCESSIBILITY in cats) {

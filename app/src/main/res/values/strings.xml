@@ -1,3 +1,6 @@
 <resources>
-    <string name="app_name">Android Optimizer</string>
+    <string name="widget_small_desc">RAM and CPU percentage</string>
+    <string name="widget_medium_desc">RAM, CPU, storage and battery</string>
+    <string name="widget_large_desc">Live CPU/RAM graphs, swap, storage, battery, network, top apps and Optimize RAM</string>
+    <string name="a11y_force_stop_desc">Optional helper. Only when you press Force stop in the Optimizer app, it opens the target app\'s system App info screen and taps the system \"Force stop\" button and its confirmation. It does not read or store anything and does nothing otherwise.</string>
 </resources>

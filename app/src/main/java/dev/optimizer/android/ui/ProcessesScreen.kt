@@ -1,5 +1,6 @@
 package dev.optimizer.android.ui
 
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -58,6 +59,8 @@ fun ProcessesScreen() {
     var expanded by remember { mutableStateOf<Int?>(null) }
     var snapTick by remember { mutableIntStateOf(0) }
     var restoreFor by remember { mutableStateOf<SnapInfo?>(null) }
+    var stopAll by remember { mutableStateOf(false) }
+    var rv by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(reload) {
         busy = "Reading processes..."
@@ -79,6 +82,7 @@ fun ProcessesScreen() {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(enabled = busy == null, onClick = { sel.clear(); reload++ }) { Text("Refresh") }
                     Button(enabled = sel.isNotEmpty() && busy == null, onClick = { action = "stop" }) { Text("Stop (${sel.size})") }
+                    OutlinedButton(enabled = busy == null, onClick = { stopAll = true }) { Text("Stop all…") }
                     OutlinedButton(enabled = sel.isNotEmpty() && busy == null, onClick = { action = "ban" }) { Text("Ban") }
                     OutlinedButton(enabled = sel.isNotEmpty() && busy == null, onClick = { action = "unban" }) { Text("Unban") }
                 }
@@ -99,6 +103,10 @@ fun ProcessesScreen() {
                         Text("Suspicion: ${p.level} (${p.score})" + (p.critical?.let { " · PROTECTED: $it" } ?: ""), style = MaterialTheme.typography.labelMedium,
                             color = if (p.score >= 6) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    if (p.pkg != null && p.critical == null) androidx.compose.material3.IconButton(onClick = {
+                        val now = dev.optimizer.android.core.Rules.isNever(p.pkg)
+                        dev.optimizer.android.core.Rules.setNever(ctx, p.pkg, !now)?.let { toast(ctx, it) }; if (!now) sel.remove(p.pid); rv++
+                    }) { androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.Lock, "Never stop", tint = if (rv >= 0 && dev.optimizer.android.core.Rules.isNever(p.pkg)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline) }
                     TextButton(onClick = { expanded = if (expanded == p.pid) null else p.pid }) { Text(if (expanded == p.pid) "Hide" else "Why?") }
                 }
                 if (expanded == p.pid) Text(if (p.reasons.isEmpty()) "No scoring factors apply." else p.reasons.joinToString("\n"), style = MaterialTheme.typography.bodySmall)
@@ -147,6 +155,21 @@ fun ProcessesScreen() {
                     msg = r; busy = null; sel.clear(); AppState.bumpLog(); reload++
                 }
             }, onNo = { action = null })
+    }
+    if (stopAll) {
+        val cands = remember(procs) { procs.filter { it.pkg != null && it.critical == null }.groupBy { it.pkg!! }.map { (k, v) -> CloseRow(k, v.first().label, v.sumOf { it.rssKb }) }.sortedByDescending { it.ramKb } }
+        val csel = remember { androidx.compose.runtime.mutableStateOf(cands.map { it.pkg }.toSet()) }
+        AlertDialog(onDismissRequest = { stopAll = false }, title = { Text("Stop apps") },
+            text = { Column { Text("All ticked by default; untick or lock (Never stop) anything you want to keep. Protected apps are not listed.", style = MaterialTheme.typography.bodySmall); CloseListBody(cands, csel, 300) } },
+            confirmButton = { Button(enabled = csel.value.isNotEmpty(), onClick = {
+                val pk = csel.value; stopAll = false
+                scope.launch {
+                    busy = "Stopping..."
+                    msg = withContext(Dispatchers.IO) { procs.filter { it.pkg in pk }.distinctBy { it.pkg }.joinToString("\n") { Processes.stop(ctx, it).message } }
+                    busy = null; sel.clear(); AppState.bumpLog(); reload++
+                }
+            }) { Text("Stop ${csel.value.size}") } },
+            dismissButton = { TextButton(onClick = { stopAll = false }) { Text("Cancel") } })
     }
     restoreFor?.let { s ->
         val cats = remember { mutableStateListOf(SnapCat.PACKAGES, SnapCat.ACCESSIBILITY, SnapCat.NOTIFLISTENERS, SnapCat.NETBLOCKS) }

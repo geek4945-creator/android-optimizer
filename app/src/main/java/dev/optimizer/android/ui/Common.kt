@@ -44,11 +44,36 @@ object AppState {
     var backupsVersion by mutableStateOf(0)
     var themeMode by mutableStateOf(0)
     var amoled by mutableStateOf(false)
+    /** Latest Device Profile (null until the first scan finishes) and derived low-end flag. */
+    var profile by mutableStateOf<dev.optimizer.android.core.DeviceProfile?>(null)
+    var lowEnd by mutableStateOf(false)
+    /** One-time message after an automatic re-scan (OS update detected). */
+    var profileNotice by mutableStateOf<String?>(null)
+    var scanning by mutableStateOf(false)
+    var showWizard by mutableStateOf(false)
+    /** Deep link into More: set to a page key (e.g. "freeze"), MainActivity switches to the More tab and MoreScreen consumes it. */
+    var morePage by mutableStateOf<String?>(null)
+    fun openPage(key: String) { morePage = key }
+
+    fun applyProfile(p: dev.optimizer.android.core.DeviceProfile?) {
+        profile = p; lowEnd = dev.optimizer.android.features.Features.lowEnd()
+    }
+    /** Runs a device scan on a worker thread and publishes it. */
+    fun rescan(ctx: Context, notice: String? = null, done: () -> Unit = {}) {
+        if (scanning) return
+        scanning = true
+        Thread {
+            val p = runCatching { dev.optimizer.android.core.DeviceProfile.scan(ctx) }.getOrNull()
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+                applyProfile(p); scanning = false; if (notice != null) profileNotice = notice; done()
+            }
+        }.start()
+    }
 
     fun refresh() { rootState = Root.state; baseline = Backups.hasBaseline() }
     fun bumpLog() { logVersion++; refresh() }
-    val rooted: Boolean get() = rootState == RootState.ROOTED
-    val unlocked: Boolean get() = rooted && baseline
+    val rooted: Boolean get() = rootState == RootState.ROOTED || dev.optimizer.android.core.ShizukuBridge.ready
+    val unlocked: Boolean get() = (rooted || dev.optimizer.android.core.Priv.writeSecure()) && baseline
 }
 
 @Composable

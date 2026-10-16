@@ -62,7 +62,17 @@ object Monitor {
         return ((dT - dI).toFloat() / dT * 100f).coerceIn(0f, 100f)
     }
 
+    /** `top -b` exists in toybox (Android 8+). Older toolbox `top` has no -b but already prints once with -n 1. */
+    private fun topRun(m: Int, timeout: Long, forceRoot: Boolean = false): dev.optimizer.android.core.ShRes {
+        val root = forceRoot || Root.isRooted
+        val a = Sh.run("top -b -n 1 -m $m 2>&1", root, timeout)
+        val bad = a.out.isBlank() || Regex("(?i)unknown option|invalid option|usage:|unrecognized").containsMatchIn(a.out.take(400))
+        return if (!bad) a else Sh.run("top -n 1 -m $m 2>&1", root, timeout)
+    }
+
     private fun parseTopHeader(out: String): Float? {
+        // toolbox (Android 5-7): "User 3%, System 5%, IOW 0%, IRQ 0%"
+        Regex("User\\s+(\\d+)%,\\s*System\\s+(\\d+)%").find(out)?.let { m -> return (m.groupValues[1].toFloat() + m.groupValues[2].toFloat()).coerceIn(0f, 100f) }
         // toybox: "800%cpu  23%user   0%nice  12%sys 760%idle ..."
         val l = out.lineSequence().firstOrNull { it.contains("%cpu") && it.contains("%idle") } ?: return null
         val total = Regex("(\\d+)%cpu").find(l)?.groupValues?.get(1)?.toFloatOrNull() ?: return null
@@ -77,7 +87,7 @@ object Monitor {
             if (p == null) cpuMode = 1 else return if (p < 0) CpuSample(null, "/proc/stat (warming up)") else CpuSample(p, "/proc/stat")
         }
         if (cpuMode == 1) {
-            val r = if (Root.isRooted) Sh.root("top -b -n 1 -m 1", 10) else Sh.user("top -b -n 1 -m 1", 10)
+            val r = topRun(1, 10)
             val p = parseTopHeader(r.out)
             return if (p != null) CpuSample(p, if (Root.isRooted) "top (root)" else "top (shell)")
             else { cpuMode = 2; CpuSample(null, "unavailable") }
@@ -105,7 +115,7 @@ object Monitor {
         val r = Sh.root("dumpsys meminfo", 45)
         val m = HashMap<String, Long>()
         var inSec = false
-        val rx = Regex("^\\s*([\\d,]+)K:\\s+(\\S+)")
+        val rx = Regex("^\\s*([\\d,]+)\\s*(?:K|kB):\\s+(\\S+)")
         for (l in r.out.lineSequence()) {
             if (l.startsWith("Total PSS by process")) { inSec = true; continue }
             if (inSec) {
@@ -120,7 +130,7 @@ object Monitor {
     }
 
     private fun rootCpu(): Map<String, Float> {
-        val r = Sh.root("top -b -n 1 -m 80", 20)
+        val r = topRun(80, 20, forceRoot = true)
         val m = HashMap<String, Float>()
         var cols: List<String>? = null
         for (l in r.out.lineSequence()) {
@@ -209,8 +219,9 @@ object Monitor {
 object AppControl {
     data class Result(val ok: Boolean, val message: String)
 
-    fun close(ctx: Context, pkg: String): Result {
-        if (Protected.isProtected(ctx, pkg)) return Result(false, "Protected: ${Protected.reasons(ctx, pkg)}")
+    /** [auto] = bulk / automatic callers: additionally refuses apps with a foreground service or playing media. Every caller honours 'Never stop' rules. */
+    fun close(ctx: Context, pkg: String, auto: Boolean = false): Result {
+        dev.optimizer.android.core.Rules.blockReason(ctx, pkg, ignoreActive = !auto)?.let { return Result(false, "Not stopped: $it") }
         return if (Root.isRooted) {
             val r = Sh.root("am force-stop ${Sh.q(pkg)}")
             Result(r.ok, if (r.ok) "Force-stopped $pkg" else "Failed: ${r.text}")
@@ -225,7 +236,7 @@ object AppControl {
 
     /** Root: freeze (pm disable-user, fallback pm suspend). Needs baseline backup. */
     fun keepClosedRoot(ctx: Context, pkg: String, label: String): Result {
-        if (Protected.isProtected(ctx, pkg)) return Result(false, "Protected: ${Protected.reasons(ctx, pkg)}")
+        dev.optimizer.android.core.Rules.blockReason(ctx, pkg, ignoreActive = true)?.let { return Result(false, "Not frozen: $it") }
         if (!Backups.hasBaseline()) return Result(false, "Create the baseline backup first (Root tab / Backups).")
         Sh.root("am force-stop ${Sh.q(pkg)}")
         var method = "disable"

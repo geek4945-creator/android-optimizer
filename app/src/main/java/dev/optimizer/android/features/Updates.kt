@@ -13,8 +13,6 @@ import dev.optimizer.android.core.ChangeLog
 import dev.optimizer.android.core.Protected
 import dev.optimizer.android.core.Root
 import dev.optimizer.android.core.Sh
-import java.time.LocalDate
-import java.time.temporal.ChronoUnit
 
 data class StaleApp(
     val pkg: String, val label: String, val version: String, val lastUpdate: Long, val ageDays: Long,
@@ -62,8 +60,7 @@ object Updates {
     data class SysInfo(val android: String, val patch: String, val patchAgeDays: Long?, val build: String)
 
     fun sysInfo(): SysInfo {
-        val age = runCatching { ChronoUnit.DAYS.between(LocalDate.parse(Build.VERSION.SECURITY_PATCH), LocalDate.now()) }.getOrNull()
-        return SysInfo("${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})", Build.VERSION.SECURITY_PATCH, age, Build.DISPLAY)
+        return SysInfo("${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})", dev.optimizer.android.core.Compat.securityPatch() ?: "unknown (needs Android 6+)", dev.optimizer.android.core.Compat.patchAgeDays(), Build.DISPLAY)
     }
 
     private val updaterLaunch = listOf("com.android.updater", "com.huawei.android.hwouc", "com.wssyncmldm", "com.oplus.ota", "com.oppo.ota", "com.zui.ota")
@@ -143,11 +140,17 @@ object Updates {
     fun appInfoIntent(pkg: String) = AppControl.settingsIntent(pkg)
 
     // ---- WebView ----
-    fun webViewInfo(): String = runCatching {
-        WebView.getCurrentWebViewPackage()?.let { "${it.packageName} ${it.versionName}" } ?: "none"
+    fun webViewInfo(ctx: Context? = null): String = runCatching {
+        if (Build.VERSION.SDK_INT >= 26) WebView.getCurrentWebViewPackage()?.let { "${it.packageName} ${it.versionName}" } ?: "none"
+        else {
+            // Before Android 8 the provider cannot be queried directly; report the usual candidates that are installed.
+            val pm = (ctx ?: dev.optimizer.android.core.Store.appCtx).packageManager
+            val found = listOf("com.google.android.webview", "com.android.webview", "com.android.chrome").mapNotNull { p -> runCatching { "$p ${pm.getPackageInfo(p, 0).versionName}" }.getOrNull() }
+            if (found.isEmpty()) "unknown (provider not queryable below Android 8)" else found.joinToString("; ") + " (provider not queryable below Android 8)"
+        }
     }.getOrDefault("unreadable")
 
-    fun webViewSettingsIntent() = Intent(Settings.ACTION_WEBVIEW_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    fun webViewSettingsIntent() = Intent(if (Build.VERSION.SDK_INT >= 24) "android.settings.WEBVIEW_SETTINGS" else Settings.ACTION_APPLICATION_DEVELOPMENT_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
     @Suppress("unused") val pmFlag = PackageManager.GET_META_DATA
 }
