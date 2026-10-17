@@ -17,8 +17,8 @@ android {
         minSdk 21
         // targetSdk 34 on purpose (installable everywhere; a Google Play upload today would need 35 - see README).
         targetSdk 34
-        versionCode 5
-        versionName '1.5.0'
+        versionCode 6
+        versionName '1.5.1'
         // No native code of our own; no ndk.abiFilters, so a single universal APK carries whatever ABIs the dependencies ship.
     }
 
@@ -72,6 +72,7 @@ android {
     buildFeatures { compose true; buildConfig true; aidl true }
     composeOptions { kotlinCompilerExtensionVersion '1.5.14' }
     lint { abortOnError false; checkReleaseBuilds false }
+    testOptions { unitTests.returnDefaultValues = true }
     packaging { resources { excludes += '/META-INF/{AL2.0,LGPL2.1}' } }
 }
 
@@ -93,4 +94,6 @@ dependencies {
     implementation 'dev.rikka.shizuku:api:13.1.5'
     implementation 'dev.rikka.shizuku:provider:13.1.5'
     debugImplementation 'androidx.compose.ui:ui-tooling'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20240303'
 }

@@ -31,6 +31,10 @@ fun SettingsScreen() {
                 androidx.compose.material3.OutlinedButton(onClick = { AppState.showWizard = true }) { Text("Run setup wizard") }
             }
         }
+        Section("App updates") {
+            val updCtl = dev.optimizer.android.AppUpdates.get(androidx.compose.ui.platform.LocalContext.current)
+            dev.optimizer.android.AppUpdateCard(updCtl)
+        }
         Section("Theme") {
             Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)) {
                 listOf(0 to "System", 1 to "Light", 2 to "Dark").forEach { (m, l) ->

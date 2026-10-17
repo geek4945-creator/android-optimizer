@@ -1,6 +1,6 @@
 # Android Optimizer
 
-A native Android app (Kotlin, Jetpack Compose, Material 3; `minSdk 21` (Android 5.0), `targetSdk 34`, version 1.5.0) that assesses a device, monitors CPU/RAM live, lets you close or freeze apps, and – with root (Rooted edition), Shizuku or a few adb grants – applies safe, reversible optimisations with a full backup/restore safety net. It ships as **two editions** (see *Editions*).
+A native Android app (Kotlin, Jetpack Compose, Material 3; `minSdk 21` (Android 5.0), `targetSdk 34`, version 1.5.1) that assesses a device, monitors CPU/RAM live, lets you close or freeze apps, and – with root (Rooted edition), Shizuku or a few adb grants – applies safe, reversible optimisations with a full backup/restore safety net. It ships as **two editions** (see *Editions*).
 
 > **It does not root your phone and contains no exploits.** In the Rooted edition root must already be installed by you (Magisk or KernelSU); the app only *asks* the root manager for permission via `su`. The Standard edition never calls `su` at all.
 
@@ -31,6 +31,8 @@ adb install -r app/build/outputs/apk/standard/debug/app-standard-debug.apk   # o
 ## Tabs
 
 Bottom navigation (a navigation rail on screens ≥ 600 dp wide): **Root · Assess · Monitor · Optimize · More** (More contains **RAM Optimizer**, **Rules**, **Processes**, **Network**, **Diagnostics**, **Updates**, **Backups**, **Launchers**, **Google Play**, **Settings**).
+
+**Updating the app:** **More → Settings → App updates → Check for updates**. It looks at this repo's latest GitHub release (the asset for your edition, `AndroidOptimizer-standard-release.apk` or `AndroidOptimizer-rooted-release.apk`), downloads it and opens Android's installer. It also checks once a day when you open the app and offers the update in a dialog. Allow *Install unknown apps* for this app the first time. Same package + signing key, so settings and backups are kept.
 
 | Tab | What it does | Needs root? |
 |---|---|---|

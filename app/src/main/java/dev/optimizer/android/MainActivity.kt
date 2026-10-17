@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -49,6 +50,8 @@ import dev.optimizer.android.ui.RootScreen
 import dev.optimizer.android.ui.SetupWizard
 
 class MainActivity : ComponentActivity() {
+    override fun onResume() { super.onResume(); AppUpdates.get(this).onResume() }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Store.init(this)
@@ -71,6 +74,7 @@ class MainActivity : ComponentActivity() {
                 runOnUiThread { AppState.refresh() }
             }.start()
         }
+        AppUpdates.get(this).autoCheck()   // once a day, silent; Settings > App updates has the manual button
         setContent { AppTheme { if (AppState.showWizard) SetupWizard(onClose = { }) else MainScreen() } }
     }
 }
@@ -116,6 +120,15 @@ fun MainScreen() {
                 dests.forEachIndexed { i, d -> NavigationBarItem(selected = tab == i, onClick = { tab = i }, icon = { Icon(d.icon, null) }, label = { Text(d.label) }) }
             }
         }) { pad -> content(Modifier.padding(pad)) }
+    }
+    val updCtx = androidx.compose.ui.platform.LocalContext.current
+    val upd = AppUpdates.get(updCtx)
+    var updDismissed by rememberSaveable { mutableStateOf(false) }
+    (upd.state as? AppUpdateState.Available)?.takeIf { !updDismissed }?.let { a ->
+        AlertDialog(onDismissRequest = { updDismissed = true }, title = { Text("Update ${a.info.version} available") },
+            text = { Text("A newer version of Android Optimizer is on GitHub. It installs over this one and keeps your settings and backups. You'll confirm in the Android installer.") },
+            confirmButton = { TextButton(onClick = { updDismissed = true; upd.onTap() }) { Text("Download & install") } },
+            dismissButton = { TextButton(onClick = { updDismissed = true }) { Text("Later") } })
     }
     AppState.profileNotice?.let { msg ->
         AlertDialog(onDismissRequest = { AppState.profileNotice = null }, title = { Text("Device profile updated") }, text = { Text(msg) },
